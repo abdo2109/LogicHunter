@@ -66,11 +66,15 @@ def js_hunter_module():
         return
 
     target_domain = urllib.parse.urlparse(target_url).netloc
-    cache_file = f"cache_{target_domain.replace(':', '_')}.txt"
-    juicy_data = ""
+    clean_cache_file = f"clean_cache_{target_domain.replace(':', '_')}.txt"
+    raw_cache_file = f"raw_cache_{target_domain.replace(':', '_')}.txt"
+    
+    cleaned_data = ""
+    raw_data = ""
 
     # --- نظام الاستكمال (Resume Logic) ---
-    if os.path.exists(cache_file):
+    cache_exists = os.path.exists(clean_cache_file) or os.path.exists(raw_cache_file)
+    if cache_exists:
         console.print(f"\n[bold green][+] Found previous saved data for {target_domain}![/bold green]")
         try:
             choice = Prompt.ask("[bold cyan][?] Do you want to resume using saved data? (y/n)[/bold cyan]", choices=["y", "n"])
@@ -78,18 +82,32 @@ def js_hunter_module():
             choice = "n"
             
         if choice == "y":
-            with open(cache_file, "r", encoding="utf-8") as f:
-                juicy_data = f.read()
+            if os.path.exists(clean_cache_file):
+                with open(clean_cache_file, "r", encoding="utf-8") as f:
+                    cleaned_data = f.read()
+            if os.path.exists(raw_cache_file):
+                with open(raw_cache_file, "r", encoding="utf-8") as f:
+                    raw_data = f.read()
             console.print("[bold green][+] Data loaded from cache successfully.[/bold green]")
             
     # لو مفيش كاش أو اليوزر اختار يمسح ويعيد
-    if not juicy_data:
+    if not cleaned_data and not raw_data:
+        console.print("\n[bold cyan][?] Choose Extraction Mode:[/bold cyan]")
+        console.print("[1] Cleaned only (Filter strings & comments)")
+        console.print("[2] Raw only (Full JS files)")
+        console.print("[3] Both (Extract both Raw and Cleaned)")
+        
+        try:
+            ext_mode = Prompt.ask("[bold yellow]Select mode[/bold yellow]", choices=["1", "2", "3"], default="1")
+        except UnicodeDecodeError:
+            ext_mode = "1"
+
         try:
             with console.status(f"[bold green]Scanning {target_url} for JS files...[/bold green]", spinner="dots"):
                 response = requests.get(target_url, timeout=10)
                 soup = BeautifulSoup(response.text, 'html.parser')
                 
-                js_links = []
+                js_links =[]
                 for script in soup.find_all('script'):
                     if script.get('src'):
                         full_url = urllib.parse.urljoin(target_url, script.get('src'))
@@ -103,11 +121,11 @@ def js_hunter_module():
             console.print(f"\n[bold green][+] Found {len(js_links)} JS files.[/bold green]")
             
             # فلتر سريع
-            junk_libs = ['jquery', 'bootstrap', 'analytics', 'gtm', 'recaptcha', 'pixel', 'polyfill', 'adsystem', 'track', 'metrics', 'fontawesome', 'vendor', 'react-dom']
-            filtered_links = [link for link in js_links if not any(junk in link.lower() for junk in junk_libs)]
+            junk_libs =['jquery', 'bootstrap', 'analytics', 'gtm', 'recaptcha', 'pixel', 'polyfill', 'adsystem', 'track', 'metrics', 'fontawesome', 'vendor', 'react-dom']
+            filtered_links =[link for link in js_links if not any(junk in link.lower() for junk in junk_libs)]
             filtered_links = list(set(filtered_links))
 
-            console.print(f"\n[bold green][+] Selected {len(filtered_links)} files for Smart Regex Scanning.[/bold green]")
+            console.print(f"\n[bold green][+] Selected {len(filtered_links)} files for Scanning.[/bold green]")
             
             success_count = 0
             fail_count = 0
@@ -118,24 +136,29 @@ def js_hunter_module():
                     if js_resp.status_code == 200:
                         success_count += 1
                         js_text = js_resp.text
-                        file_findings = set()
                         
-                        string_pattern = r'"([^"\\]*(?:\\.[^"\\]*)*)"|\'([^\'\\]*(?:\\.[^\'\\]*)*)\'|`([^`\\]*(?:\\.[^`\\]*)*)`'
-                        for match in re.findall(string_pattern, js_text):
-                            s = match[0] or match[1] or match[2]
-                            if s and 4 < len(s) < 500: 
-                                junk_strings = ['<svg', '<?xml', 'data:image', 'base64,', 'rgb(', 'rgba(', 'font-family', 'border-radius', 'solid #', 'px', '100%', '<div', '<span', '<a href', 'text/javascript', 'application/json']
-                                if not any(junk in s.lower() for junk in junk_strings):
-                                    file_findings.add(s)
+                        if ext_mode in["2", "3"]:
+                            raw_data += f"\n\n/* --- RAW FILE: {link} --- */\n"
+                            raw_data += js_text
+                            
+                        if ext_mode in["1", "3"]:
+                            file_findings = set()
+                            string_pattern = r'"([^"\\]*(?:\\.[^"\\]*)*)"|\'([^\'\\]*(?:\\.[^\'\\]*)*)\'|`([^`\\]*(?:\\.[^`\\]*)*)`'
+                            for match in re.findall(string_pattern, js_text):
+                                s = match[0] or match[1] or match[2]
+                                if s and 4 < len(s) < 500: 
+                                    junk_strings =['<svg', '<?xml', 'data:image', 'base64,', 'rgb(', 'rgba(', 'font-family', 'border-radius', 'solid #', 'px', '100%', '<div', '<span', '<a href', 'text/javascript', 'application/json']
+                                    if not any(junk in s.lower() for junk in junk_strings):
+                                        file_findings.add(s)
 
-                        for comment in re.findall(r'//(.*?)[\r\n]|/\*(.*?)\*/', js_text, flags=re.DOTALL):
-                            c = comment[0] or comment[1]
-                            if c and 4 < len(c.strip()) < 300:
-                                file_findings.add(f"[COMMENT] {c.strip()}")
+                            for comment in re.findall(r'//(.*?)[\r\n]|/\*(.*?)\*/', js_text, flags=re.DOTALL):
+                                c = comment[0] or comment[1]
+                                if c and 4 < len(c.strip()) < 300:
+                                    file_findings.add(f"[COMMENT] {c.strip()}")
 
-                        if file_findings:
-                            juicy_data += f"\n\n/* --- Target File: {link} --- */\n"
-                            juicy_data += "\n".join(file_findings)
+                            if file_findings:
+                                cleaned_data += f"\n\n/* --- CLEAN FILE: {link} --- */\n"
+                                cleaned_data += "\n".join(file_findings)
                     else:
                         fail_count += 1
                 except:
@@ -143,25 +166,55 @@ def js_hunter_module():
             
             console.print(f"\n[bold yellow][=] Extraction Summary: Processed ({success_count}/{len(filtered_links)}) files | Failed/Timeout: {fail_count}[/bold yellow]")
             
-            if juicy_data:
-                with open(cache_file, "w", encoding="utf-8") as f:
-                    f.write(juicy_data)
-                console.print(f"[bold cyan][+] Extracted lines saved to cache: {cache_file}[/bold cyan]")
+            if cleaned_data:
+                with open(clean_cache_file, "w", encoding="utf-8") as f:
+                    f.write(cleaned_data)
+                console.print(f"[bold cyan][+] Cleaned data saved to cache: {clean_cache_file}[/bold cyan]")
+            
+            if raw_data:
+                with open(raw_cache_file, "w", encoding="utf-8") as f:
+                    f.write(raw_data)
+                console.print(f"[bold cyan][+] Raw data saved to cache: {raw_cache_file}[/bold cyan]")
                 
         except Exception as e:
             console.print(f"[bold red][!] Error during scraping: {str(e)}[/bold red]")
             return
 
-    if not juicy_data:
-        console.print("[bold yellow][!] No strings or comments found in the selected JS files.[/bold yellow]")
+    if not cleaned_data and not raw_data:
+        console.print("[bold yellow][!] No data found or extracted.[/bold yellow]")
         Prompt.ask("\n[bold yellow]Press Enter to return...[/bold yellow]")
         return
 
+    selected_data = ""
+    source_suffix = ""
+
+    if cleaned_data and raw_data:
+        console.print("\n[bold cyan][?] Which source do you want to send to AI?[/bold cyan]")
+        console.print("[1] Cleaned data")
+        console.print("[2] Raw data")
+        try:
+            src_choice = Prompt.ask("[bold yellow]Select source[/bold yellow]", choices=["1", "2"], default="1")
+        except UnicodeDecodeError:
+            src_choice = "1"
+            
+        if src_choice == "1":
+            selected_data = cleaned_data
+            source_suffix = "_clean"
+        else:
+            selected_data = raw_data
+            source_suffix = "_raw"
+    elif cleaned_data:
+        selected_data = cleaned_data
+        source_suffix = "_clean"
+    elif raw_data:
+        selected_data = raw_data
+        source_suffix = "_raw"
+
     MAX_CHARS = 200000
-    total_chars = len(juicy_data)
+    total_chars = len(selected_data)
     
     if total_chars > MAX_CHARS:
-        chunks = [juicy_data[i:i+MAX_CHARS] for i in range(0, total_chars, MAX_CHARS)]
+        chunks = [selected_data[i:i+MAX_CHARS] for i in range(0, total_chars, MAX_CHARS)]
         console.print(f"\n[bold yellow][!] The extracted data is HUGE: {total_chars} characters![/bold yellow]")
         console.print(f"[bold yellow][!] It has been split into {len(chunks)} chunks ({MAX_CHARS} chars each).[/bold yellow]")
         
@@ -176,11 +229,11 @@ def js_hunter_module():
         data_to_send = chunks[chunk_index]
         current_chunk_display = chunk_index + 1
         console.print(f"[bold green][+] Sending Chunk {current_chunk_display}/{len(chunks)} ({len(data_to_send)} chars) to AI...[/bold green]")
-        report_suffix = f"_chunk_{current_chunk_display}"
+        report_suffix = f"{source_suffix}_chunk_{current_chunk_display}"
     else:
-        data_to_send = juicy_data
+        data_to_send = selected_data
         console.print(f"\n[bold cyan][+] Payload ready! Sending {total_chars} chars to AI for deep analysis...[/bold cyan]")
-        report_suffix = ""
+        report_suffix = source_suffix
 
     # === إضافة خيارات التخصيص للموديول الأول ===
     console.print("\n[bold cyan][?] What do you want the AI to extract from this JS data?[/bold cyan]")
@@ -296,7 +349,7 @@ def param_discovery_module():
     else:
         console.print("[bold cyan][!] Paste your complete HTTP Request below.[/bold cyan]")
         console.print("[bold red]When you are done, type 'EOF' on a new empty line and press Enter.[/bold red]")
-        lines = []
+        lines =[]
         while True:
             try:
                 line = input()
@@ -326,9 +379,7 @@ def param_discovery_module():
             المطلوب منك:
             1. 🔍 **تحليل السياق والـ Headers:** ما هو هدف الطلب؟ وهل يوجد JWT, Auth tokens أو Custom Headers يمكن استغلالها؟
             2. 🎯 **اكتشاف الباراميترز (Hidden Parameters):** استنتج أهم 15 Parameter أو JSON Key مخفي متوقع وجوده في الـ Backend بناءً على سياق الطلب لتجربتهم (مثل is_admin, role, user_id, permissions). اشرح باختصار سبب اقتراحك لكل مجموعة.
-            3. 📝 **استخراج Wordlist:** يجب أن تضع القائمة الصافية للباراميترز في نهاية ردك تماماً تحت عنوان بالضبط هكذا: `[WORDLIST]` بحيث يكون كل باراميتر في سطر منفصل وبدون أي رموز أو ترقيم.
-            
-            [تعليمات هامة للتنسيق]:
+            3. 📝 **استخراج Wordlist:** يجب أن تضع القائمة الصافية للباراميترز في نهاية ردك تماماً تحت عنوان بالضبط هكذا: `[WORDLIST]` بحيث يكون كل باراميتر في سطر منفصل وبدون أي رموز أو ترقيم.[تعليمات هامة للتنسيق]:
             - استخدم الـ Markdown باحترافية.
             - أي مصطلح تقني بالإنجليزي أو كود أو باراميتر يجب أن يوضع بين علامات `backticks` لعدم تداخل الكلام العربي مع الإنجليزي.
             """
@@ -344,7 +395,7 @@ def param_discovery_module():
             wordlist_raw = parts[1].strip()
             
             # تنظيف الـ Wordlist
-            wordlist_lines = [line.strip().replace('`', '').replace('-', '').replace('*', '').strip() for line in wordlist_raw.split('\n') if line.strip()]
+            wordlist_lines =[line.strip().replace('`', '').replace('-', '').replace('*', '').strip() for line in wordlist_raw.split('\n') if line.strip()]
             
             console.print(Panel(analysis_report, border_style="red", title="[0xHamid] Context-Aware Analysis"))
             
@@ -365,7 +416,7 @@ def param_discovery_module():
     except Exception as e:
         console.print(f"[bold red][!] Error: {str(e)}[/bold red]")
         
-    Prompt.ask("\n[bold yellow]Press Enter to return to the Main Menu...[/bold Menu...[/bold yellow]")
+    Prompt.ask("\n[bold yellow]Press Enter to return to the Main Menu...[/bold yellow]")
 
 def api_auth_bypass_module():
     console.print("\n[bold yellow][*] Module 3: API Auth Bypass & BOLA (IDOR) Analyzer[/bold yellow]")
@@ -393,7 +444,7 @@ def api_auth_bypass_module():
     else:
         console.print("[bold cyan][!] Paste your complete HTTP Request below.[/bold cyan]")
         console.print("[bold red]When you are done, type 'EOF' on a new empty line and press Enter.[/bold red]")
-        lines = []
+        lines =[]
         while True:
             try:
                 line = input()
